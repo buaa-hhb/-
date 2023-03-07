@@ -1,0 +1,184 @@
+`timescale 1ns / 1ps
+//////////////////////////////////////////////////////////////////////////////////
+// Company: 
+// Engineer: 
+// 
+// Create Date: 2023/03/06 10:42:51
+// Design Name: 
+// Module Name: axi_stream_insert_header
+// Project Name: 
+// Target Devices: 
+// Tool Versions: 
+// Description: 
+// 
+// Dependencies: 
+// 
+// Revision:
+// Revision 0.01 - File Created
+// Additional Comments:
+// 
+//////////////////////////////////////////////////////////////////////////////////
+//
+
+module axi_stream_insert_header#(
+parameter DATA_DEPTH =1024,//定义最大深度
+parameter DATA_WD = 32,
+parameter DATA_BYTE_WD = DATA_WD / 8,
+parameter DATA_CNT=DATA_DEPTH/DATA_WD,
+parameter BYTE_CNT_WD = $clog2(DATA_BYTE_WD)
+    )(
+    input clk,
+input rst_n,
+// AXI Stream input original data
+input valid_in,
+input [DATA_WD-1 : 0] data_in,
+input [DATA_BYTE_WD-1 : 0] keep_in,
+input last_in,
+output ready_in,
+// AXI Stream output with header inserted
+output valid_out,
+output [DATA_WD-1 : 0] data_out,
+output [DATA_BYTE_WD-1 : 0] keep_out,
+output last_out,
+input ready_out,
+// The header to be inserted to AXI Stream input
+input valid_insert,
+input [DATA_WD-1 : 0] data_insert,
+input [DATA_BYTE_WD-1 : 0] keep_insert,
+input [BYTE_CNT_WD-1 : 0] byte_insert_cnt,
+output ready_insert
+    );
+//-------检测last_in脉冲变化--------------//
+    wire last_in_pulse;
+    reg last_in_reg0,last_in_reg1;
+    always@(posedge clk or negedge rst_n)begin
+        if(!rst_n)begin
+            last_in_reg0<=0;
+            last_in_reg1<=0;end
+
+        else    begin
+            last_in_reg0<=last_in;
+            last_in_reg1<=last_in_reg0;
+           end
+end
+assign last_in_pulse=!last_in_reg0 &last_in_reg1;
+// input original data    //
+reg [DATA_WD-1:0]axi_m2s_data;
+reg [DATA_WD-1:0]axi_m2s_data_buffer[0:DATA_CNT-1];
+reg [DATA_WD-1:0]axi_m2s_data_buffer_q1[0:DATA_CNT-1];
+reg[DATA_CNT-1:0]data_index_flag;
+reg [DATA_CNT-1:0]data_index;
+wire axis_ready_in;
+assign ready_in =axis_ready_in;
+assign axis_ready_in=data_index==DATA_CNT ? 0:1;
+
+always@(posedge clk or negedge rst_n)begin
+    if(!rst_n)
+        axi_m2s_data <=0;
+    else if(valid_in && axis_ready_in)
+        axi_m2s_data<=data_in;
+end
+always@(posedge clk or negedge rst_n)begin
+    if(!rst_n)
+        data_index<=0;
+    else if(!last_in && valid_in && ready_in)begin
+        data_index<=data_index+1;end
+    else if(last_in)begin
+        data_index<=0;
+        data_index_flag<=data_index;
+        end
+    else
+        data_index<=0;       
+end
+wire [DATA_CNT-1:0]last_in_flag;
+assign last_in_flag =data_index_flag+1;
+
+integer i;
+always@(posedge clk or negedge rst_n)begin
+    if(!rst_n)begin
+        for(i=0;i<DATA_CNT;i=i+1)
+            axi_m2s_data_buffer[i]<=0;
+    end
+    else if(data_index!=DATA_CNT && valid_in && axis_ready_in)begin
+         axi_m2s_data_buffer[data_index]<=axi_m2s_data;
+         end
+    else if(data_index == DATA_CNT)begin
+        axi_m2s_data_buffer[data_index]<=axi_m2s_data;end
+    else begin         
+         for(i=DATA_CNT;i<DATA_CNT;i=i+1)
+            axi_m2s_data_buffer[i]<=0;    
+         end
+end   
+//    output                     //
+reg [DATA_WD-1:0]axi_s2m_data_buffer[0:DATA_CNT-1];
+reg [DATA_CNT-1:0]mdata_index;
+wire mlast_out;
+assign mlast_out= mdata_index==  last_in_flag-1 ? 1:0;    
+assign last_out =mlast_out; 
+assign valid_out =mdata_index== last_in_flag ? 0:1;
+assign keep_out ={(DATA_BYTE_WD){1'b1}};
+always@(posedge clk or negedge rst_n)begin
+    if(!rst_n)
+        mdata_index<=0;
+    else if(mdata_index!=last_in_flag && ready_out && valid_out)     
+        mdata_index<=mdata_index+1;
+     
+    else if(mdata_index==last_in_flag)
+        mdata_index<=0;
+    else 
+        mdata_index<=mdata_index;    
+end 
+// header //
+reg [DATA_WD-1:0]data_insert_buffer;
+reg skeep_insert;
+reg insert_flag;
+wire s_ready_insert;
+assign s_ready_insert =insert_flag==1  ? 0:1;
+assign ready_insert=s_ready_insert;
+always@(posedge clk or negedge rst_n)begin
+    if(!rst_n)begin
+        data_insert_buffer<=0;
+        insert_flag<=0;end
+    else if(valid_insert && ready_insert)begin
+        case(keep_insert)
+        4'b1111:begin data_insert_buffer<=data_insert;insert_flag<=1;end
+        4'b0111:begin data_insert_buffer<={8'b0,data_insert[23:0]};insert_flag<=1;end
+        4'b0011:begin data_insert_buffer<={16'b0,data_insert[15:0]};insert_flag<=1;end
+        4'b0001:begin data_insert_buffer<={24'b0,data_insert[7:0]};insert_flag<=1;end
+        default:begin data_insert_buffer<=data_insert_buffer;insert_flag<=1;end
+         endcase
+         end   
+    else begin
+        data_insert_buffer <=data_insert_buffer;
+        insert_flag<=0;end
+end
+// data transfer  //
+reg [DATA_WD-1:0]header_data_buffer[0:DATA_CNT-1];
+
+integer h;
+always@(posedge clk or negedge rst_n)begin
+    if(!rst_n)begin
+        for(h=0;h<DATA_CNT;h=h+1)
+            header_data_buffer[h]<=0;end
+    else  if(data_index==0)begin
+        if(insert_flag)begin
+        case(keep_insert)
+        4'b1111:begin header_data_buffer[0]<=data_insert_buffer;insert_flag<=0;end
+        4'b0111:begin header_data_buffer[0]<={axi_m2s_data_buffer[0][31:24],data_insert_buffer[23:0]};insert_flag<=0;end
+        4'b0011:begin header_data_buffer[0]<={axi_m2s_data_buffer[0][31:16],data_insert_buffer[15:0]};insert_flag<=0;end
+        4'b0001:begin header_data_buffer[0]<={axi_m2s_data_buffer[0][31:8],data_insert_buffer[7:0]};insert_flag<=0;end
+        default:begin header_data_buffer[0]<=data_insert_buffer;insert_flag<=0;end
+        endcase
+        end
+        else begin
+             header_data_buffer[0]<=axi_m2s_data_buffer[0];
+        end
+        end
+    else begin
+        for(h=1;h<DATA_CNT;h=h+1)
+             header_data_buffer[h]<=axi_m2s_data_buffer[h];
+        end
+end              
+assign data_out =valid_out ?  header_data_buffer[mdata_index]:data_out;
+             
+endmodule
