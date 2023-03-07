@@ -82,9 +82,9 @@ byte_insert_cnt='d4;
 end
 
 always@(posedge clk or negedge rst_n)begin
-    if(!rst_n)
+    if(!rst_n)begin
         data_in<=0;
-       data_in<=data_in+1;
+       end
     else
         data_in<={$random}%32;    
 end
